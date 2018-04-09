@@ -64,7 +64,7 @@ class Evaler(object):
     def get_model_class(model_name):
         if model_name == 'baseline':
             from model_baseline import Model
-        elif model_name == 'rn':
+        elif model_name == 'relational_network':
             from model_rn import Model
         else:
             raise ValueError(model_name)
@@ -196,7 +196,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=50)
-    parser.add_argument('--model', type=str, default='conv', choices=['rn', 'baseline'])
+    parser.add_argument('--model', type=str, default='conv', choices=['relational_network', 'baseline'])
     parser.add_argument('--checkpoint_path', type=str)
     parser.add_argument('--train_dir', type=str)
     parser.add_argument('--dataset_path', type=str, default='Sort-of-CLEVR_default')

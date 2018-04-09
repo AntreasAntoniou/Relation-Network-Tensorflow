@@ -12,7 +12,9 @@ from input_ops import create_input_ops
 import os
 import time
 import tensorflow as tf
-
+import numpy as np
+import tqdm
+import matplotlib.pyplot as mplot
 
 class Trainer(object):
 
@@ -20,15 +22,18 @@ class Trainer(object):
     def get_model_class(model_name):
         if model_name == 'baseline':
             from model_baseline import Model
-        elif model_name == 'rn':
+        elif model_name == 'relational_network':
             from model_rn import Model
+        elif model_name == 'attentional_relational_network':
+            from model_attentional_rn import Model
         else:
             raise ValueError(model_name)
         return Model
 
     def __init__(self,
                  config,
-                 dataset,
+                 dataset_train,
+                 dataset_val,
                  dataset_test):
         self.config = config
         hyper_parameter_str = config.dataset_path+'_lr_'+str(config.learning_rate)
@@ -46,10 +51,18 @@ class Trainer(object):
         # --- input ops ---
         self.batch_size = config.batch_size
 
-        _, self.batch_train = create_input_ops(dataset, self.batch_size,
+        _, self.batch_train = create_input_ops(dataset_train, self.batch_size,
                                                is_training=True)
+
+        _, self.batch_val = create_input_ops(dataset_val, self.batch_size,
+                                              is_training=False)
+
         _, self.batch_test = create_input_ops(dataset_test, self.batch_size,
                                               is_training=False)
+        self.train_length = len(dataset_train)
+        self.val_length = len(dataset_val)
+        self.test_length = len(dataset_test)
+
 
         # --- create model ---
         Model = self.get_model_class(config.model)
@@ -87,7 +100,8 @@ class Trainer(object):
         except:
             pass
 
-        self.saver = tf.train.Saver(max_to_keep=1000)
+        self.saver = tf.train.Saver(max_to_keep=5)
+        self.best_val_saver = tf.train.Saver(max_to_keep=5)
         self.summary_writer = tf.summary.FileWriter(self.train_dir)
 
         self.checkpoint_secs = 600  # 10 min
@@ -122,28 +136,85 @@ class Trainer(object):
         log.infov("Training Starts!")
         pprint(self.batch_train)
 
-        max_steps = 200000
 
+        step = 0
         output_save_step = 1000
+        epoch_train_iter = int(self.train_length/self.batch_size)# * 10
+        epoch_val_iter = int(self.val_length/self.batch_size)# * 10
+        total_epochs = int(200000 / epoch_train_iter)
 
-        for s in xrange(max_steps):
-            step, accuracy, summary, loss, step_time = \
-                self.run_single_step(self.batch_train, step=s, is_train=True)
+        best_val_accuracy = 0.
+        with tqdm.tqdm(total=total_epochs) as epoch_bar:
 
-            # periodic inference
-            accuracy_test = \
-                self.run_test(self.batch_test, is_train=False)
+            for e in range(total_epochs):
+                train_loss = []
+                train_accuracy = []
+                val_loss = []
+                val_accuracy = []
+                total_train_time = []
+                with tqdm.tqdm(total=epoch_train_iter) as train_bar:
+                    for train_step in range(epoch_train_iter):
+                        step, accuracy, summary, loss, step_time = \
+                            self.run_single_step(self.batch_train, step=step, is_train=True)
+                        step += 1
+                        train_loss.append(loss)
+                        train_accuracy.append(accuracy)
+                        total_train_time.append(step_time)
+                        train_bar.update(1)
+                        train_bar.set_description("Train loss: {train_loss}, Train accuracy: {train_accuracy},"
+                                                  "Train loss mean: {train_loss_mean}, "
+                                                  "Train accuracy mean: {train_accuracy_mean}"
+                                                  .format(train_loss=loss, train_accuracy=accuracy,
+                                                          train_loss_mean=np.mean(train_loss),
+                                                          train_accuracy_mean=np.mean(train_accuracy)))
 
-            if s % 10 == 0:
-                self.log_step_message(step, accuracy, accuracy_test, loss, step_time)
+                    train_loss_mean = np.mean(train_loss)
+                    train_loss_std = np.std(train_loss)
+                    train_accuracy_mean = np.mean(train_accuracy)
+                    train_accuracy_std = np.std(train_accuracy)
+                    total_train_time = np.sum(total_train_time)
 
-            self.summary_writer.add_summary(summary, global_step=step)
+                with tqdm.tqdm(total=epoch_val_iter) as val_bar:
+                    for val_iters in range(epoch_val_iter):
 
-            if s % output_save_step == 0:
-                log.infov("Saved checkpoint at %d", s)
+                        loss, accuracy = \
+                            self.run_test(self.batch_val, is_train=False)
+                        val_loss.append(loss)
+                        val_accuracy.append(accuracy)
+
+                        val_bar.update(1)
+                        val_bar.set_description("Val loss: {val_loss}, Val accuracy: {val_accuracy},"
+                                                "Val loss mean: {val_loss_mean}, Val accuracy mean: {val_accuracy_mean}"
+                                                .format(val_loss=loss, val_accuracy=loss,
+                                                        val_loss_mean=np.mean(val_loss),
+                                                        val_accuracy_mean=np.mean(train_accuracy)))
+
+                    val_loss_mean = np.mean(val_loss)
+                    val_loss_std = np.std(val_loss)
+                    val_accuracy_mean = np.mean(val_accuracy)
+                    val_accuracy_std = np.std(val_accuracy)
+
+
+
+                if val_accuracy_mean >= best_val_accuracy:
+                    best_val_accuracy = val_accuracy_mean
+                    val_save_path = self.best_val_saver.save(self.session,
+                                                os.path.join(self.train_dir, 'model'),
+                                                global_step=step)
+                    print("Saved best val model at", val_save_path)
+
+                self.log_step_message(step, train_accuracy_mean, val_loss_mean, val_accuracy_mean, train_loss_mean, total_train_time,
+                                      is_train=True)
+
+                self.summary_writer.add_summary(summary, global_step=step)
+
+
+                log.infov("Saved checkpoint at %d", step)
                 save_path = self.saver.save(self.session,
                                             os.path.join(self.train_dir, 'model'),
                                             global_step=step)
+                print("Saved current train model at", save_path)
+                epoch_bar.update(1)
 
     def run_single_step(self, batch, step=None, is_train=True):
         _start_time = time.time()
@@ -160,7 +231,7 @@ class Trainer(object):
             pass
 
         fetch_values = self.session.run(
-            fetch, feed_dict=self.model.get_feed_dict(batch_chunk, step=step)
+            fetch, feed_dict=self.model.get_feed_dict(batch_chunk, step=step, is_training=True)
         )
         [step, accuracy, summary, loss] = fetch_values[:4]
 
@@ -178,28 +249,31 @@ class Trainer(object):
 
         batch_chunk = self.session.run(batch)
 
-        accuracy_test = self.session.run(
-            self.model.accuracy, feed_dict=self.model.get_feed_dict(batch_chunk, is_training=False)
+        loss, accuracy = self.session.run(
+            [self.model.loss, self.model.accuracy], feed_dict=self.model.get_feed_dict(batch_chunk,
+                                                                                           is_training=False)
         )
 
-        return accuracy_test
+        return loss, accuracy
 
-    def log_step_message(self, step, accuracy, accuracy_test, loss, step_time, is_train=True):
+    def log_step_message(self, step, train_accuracy, val_loss, val_accuracy, train_loss, step_time, is_train=True):
         if step_time == 0:
             step_time = 0.001
         log_fn = (is_train and log.info or log.infov)
         log_fn((" [{split_mode:5s} step {step:4d}] " +
-                "Loss: {loss:.5f} " +
-                "Accuracy test: {accuracy:.2f} "
-                "Accuracy test: {accuracy_test:.2f} " +
+                "Train Loss: {train_loss:.5f} " +
+                "Train Accuracy: {train_accuracy:.2f} "
+                "Validation Accuracy: {val_accuracy:.2f} " +
+                "Validation Loss: {val_loss:.2f} " +
                 "({sec_per_batch:.3f} sec/batch, {instance_per_sec:.3f} instances/sec) "
                 ).format(split_mode=(is_train and 'train' or 'val'),
                          step=step,
-                         loss=loss,
-                         accuracy=accuracy*100,
-                         accuracy_test=accuracy_test*100,
+                         train_loss=train_loss,
+                         train_accuracy=train_accuracy*100,
+                         val_accuracy=val_accuracy*100,
+                         val_loss=val_loss,
                          sec_per_batch=step_time,
-                         instance_per_sec=self.batch_size / step_time
+                         instance_per_sec=8000 / step_time
                          )
                )
 
@@ -216,7 +290,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--model', type=str, default='rn', choices=['rn', 'baseline'])
+    parser.add_argument('--model', type=str, default='relational_network', choices=['relational_network', 'baseline', "attentional_relational_network"])
     parser.add_argument('--prefix', type=str, default='default')
     parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--dataset_path', type=str, default='Sort-of-CLEVR_default')
@@ -233,10 +307,10 @@ def main():
 
     config.data_info = dataset.get_data_info()
     config.conv_info = dataset.get_conv_info()
-    dataset_train, dataset_test = dataset.create_default_splits(path)
+    dataset_train, dataset_val, dataset_test = dataset.create_default_splits(path)
 
     trainer = Trainer(config,
-                      dataset_train, dataset_test)
+                      dataset_train, dataset_val, dataset_test)
 
     log.warning("dataset: %s, learning_rate: %f",
                 config.dataset_path, config.learning_rate)

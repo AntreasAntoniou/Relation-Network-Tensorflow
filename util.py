@@ -31,7 +31,7 @@ formatter = ColoredFormatter(
 )
 ch.setFormatter(formatter)
 
-log = logging.getLogger('rn')
+log = logging.getLogger('relational_network')
 log.setLevel(logging.DEBUG)
 log.handlers = []       # No duplicated handlers
 log.propagate = False   # workaround for duplicated logs in ipython

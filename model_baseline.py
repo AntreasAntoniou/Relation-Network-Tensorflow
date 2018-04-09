@@ -65,12 +65,12 @@ class Model(object):
         # build loss and accuracy {{{
         def build_loss(logits, labels):
             # Cross-entropy loss
-            loss = tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=labels)
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=labels))
 
             # Classification accuracy
             correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(labels, 1))
             accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-            return tf.reduce_mean(loss), accuracy
+            return loss, accuracy
         # }}}
 
         # Classifier: takes images as input and outputs class label [B, m]

@@ -67,10 +67,13 @@ def create_default_splits(path, is_train=True):
     n = len(ids)
 
     num_trains = int(n*0.8)
+    num_val = int(n*0.05)
+    num_test = int(n*0.15)
 
     dataset_train = Dataset(ids[:num_trains], path, name='train', is_train=False)
-    dataset_test = Dataset(ids[num_trains:], path, name='test', is_train=False)
-    return dataset_train, dataset_test
+    dataset_val= Dataset(ids[num_trains:num_trains+num_val], path, name='val', is_train=False)
+    dataset_test = Dataset(ids[num_trains+num_val:], path, name='test', is_train=False)
+    return dataset_train, dataset_val, dataset_test
 
 
 def all_ids(path):

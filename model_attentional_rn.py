@@ -4,6 +4,8 @@ from __future__ import print_function
 
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
+from tensorflow.python.ops.nn_ops import leaky_relu
+
 try:
     import tfplot
 except:
@@ -66,7 +68,8 @@ class Model(object):
         def build_loss(logits, labels):
             # Cross-entropy loss
             loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=labels))
-
+            l2_reqularization = tf.reduce_sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
+            loss += l2_reqularization
             # Classification accuracy
             correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(labels, 1))
             accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
@@ -91,6 +94,60 @@ class Model(object):
                 g_4 = fc(g_3, 256, name='g_4')
                 return g_4
 
+        def attentional_relational_layer(inputs, q, slices):
+            input_shape = inputs.get_shape().as_list()
+
+            b, h, w, c = input_shape[0:4]
+            print(input_shape)
+            reuse = False
+            object_combos = []
+            attentional_condition_vector = tf.layers.flatten(inputs=inputs)
+            #attentional_condition_vector = tf.layers.dense(flattened_inputs, units=c, activation=leaky_relu)
+            # attentional_condition_vector = tf.layers.conv2d(inputs=inputs, filters=h*w, kernel_size=[3, 3],
+            #                                    strides=(1, 1),
+            #                                    padding='SAME', activation=leaky_relu)
+            #attentional_condition_vector = tf.layers.flatten(inputs=attentional_condition_vector)
+            for i in range(slices):
+                attentional_condition_vector_i = tf.concat([attentional_condition_vector,
+                                                            tf.expand_dims(self.batch_size * [float(i)], axis=1)],
+                                                           axis=1)
+                attentional_condition_vector_i = tf.layers.dense(attentional_condition_vector_i, 256,
+                                                                 activation=leaky_relu,
+                                              kernel_regularizer=tf.contrib.layers.l2_regularizer(scale=0.0002),
+                                              reuse=reuse, name="attentional_features")
+                attentional_condition_vector_i = tf.layers.dropout(attentional_condition_vector_i, rate=0.5,
+                                                                   training=is_train)
+                attentional_condition_vector_i = tf.concat([attentional_condition_vector_i,
+                                                            tf.expand_dims(self.batch_size * [float(i)], axis=1)],
+                                                           axis=1)
+                attention_a = tf.layers.dense(attentional_condition_vector_i, h * w, activation=tf.nn.softmax,
+                                              kernel_regularizer=tf.contrib.layers.l2_regularizer(scale=0.0002),
+                                              name="attention_a_{}".format(i))
+                attention_a = tf.reshape(attention_a, shape=[b, h, w, 1])
+
+                attention_b = tf.layers.dense(attentional_condition_vector_i, h * w, activation=tf.nn.softmax,
+                                              kernel_regularizer=tf.contrib.layers.l2_regularizer(scale=0.0002),
+                                              name="attention_b_{}".format(i))
+                attention_b = tf.reshape(attention_b, shape=[b, h, w, 1])
+
+                flattenA = inputs * attention_a
+                flattenA = tf.reduce_sum(flattenA, axis=[1, 2])
+                flattenB = inputs * attention_b
+                flattenB = tf.reduce_sum(flattenB, axis=[1, 2])
+                flattenA = tf.layers.flatten(flattenA)
+                flattenB = tf.layers.flatten(flattenB)
+                object_A = tf.concat([flattenA, tf.expand_dims(self.batch_size * [float(i)], axis=1)], axis=1)
+                object_B = tf.concat([flattenB, tf.expand_dims(self.batch_size * [float(i)], axis=1)], axis=1)
+                g_i = g_theta(object_A, object_B, q, reuse=reuse)
+
+                reuse = True
+                # print(dense_layer.get_shape())
+                object_combos.append(g_i)
+
+            all_g = tf.stack(object_combos, axis=0)
+            all_g = tf.reduce_mean(all_g, axis=0, name='all_g')
+            return all_g
+
         # Classifier: takes images as input and outputs class label [B, m]
         def CONV(img, q, scope='CONV'):
             with tf.variable_scope(scope) as scope:
@@ -103,22 +160,7 @@ class Model(object):
                 # eq.1 in the paper
                 # g_theta = (o_i, o_j, q)
                 # conv_4 [B, d, d, k]
-                d = conv_4.get_shape().as_list()[1]
-                all_g = []
-                for i in range(d*d):
-                    o_i = conv_4[:, int(i / d), int(i % d), :]
-                    o_i = concat_coor(o_i, i, d)
-                    for j in range(d*d):
-                        o_j = conv_4[:, int(j / d), int(j % d), :]
-                        o_j = concat_coor(o_j, j, d)
-                        if i == 0 and j == 0:
-                            g_i_j = g_theta(o_i, o_j, q, reuse=False)
-                        else:
-                            g_i_j = g_theta(o_i, o_j, q, reuse=True)
-                        all_g.append(g_i_j)
-
-                all_g = tf.stack(all_g, axis=0)
-                all_g = tf.reduce_mean(all_g, axis=0, name='all_g')
+                all_g = attentional_relational_layer(inputs=conv_4, q=q, slices=32)
                 return all_g
 
         def f_phi(g, scope='f_phi'):
